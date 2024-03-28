@@ -47,8 +47,18 @@ static dwt_config_t config = {
 };
 
 int anchorIDs[] = {132, 28, 24, 10, 30};
-extern dwt_txconfig_t txconfig_options;
 int deviceID;
+
+static uint8_t msg_poll[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'P', 'O', 'L', 'L', 0xE0, 0, 0};  // Poll message array (used when initiating a distance measurement)
+static uint8_t msg_resp[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'R', 'E', 'S', 'P', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Response message array (used when responding to a poll)
+static uint8_t rx_buffer[20]; // Buffer for receiving messages
+static uint8_t frame_seq_nb = 0;
+static uint32_t status_reg = 0;
+static uint64_t poll_ts;
+static uint64_t resp_ts;
+static double tof;      // Time of Flight
+static double distance; // Calculated distance based on the Time of Flight
+extern dwt_txconfig_t txconfig_options;
 
 std::map<int, int> deviceMappings = {
     {132, 0},
@@ -200,6 +210,13 @@ void respondToPoll() {
   // Implement logic to respond to the received poll message
 }
 
+void calculateDistances() {
+  
+}
+
+void logDistanceData() {
+
+}
 
 
 
