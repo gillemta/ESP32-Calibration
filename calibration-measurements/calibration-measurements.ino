@@ -13,15 +13,16 @@
 #define RNG_DELAY_MS 1000
 #define TX_ANT_DLY 16385
 #define RX_ANT_DLY 16385
-#define RESP_RX_TIMEOUT_UUS 400
+#define RESP_RX_TIMEOUT_UUS 1000
 #define POLL_TX_TO_RESP_RX_DLY_UUS 240
-#define POLL_RX_TO_RESP_TX_DLY_UUS 450
+#define POLL_RX_TO_RESP_TX_DLY_UUS 400
 
 // Indexes
 #define ALL_MSG_SN_IDX 2
+#define RECEIVER_ID_IDX 18
+#define SENDER_ID_IDX 19
 #define RESP_MSG_POLL_RX_TS_IDX 10
 #define RESP_MSG_RESP_TX_TS_IDX 14
-#define ANCHOR_ID_IDX 18
 
 // Other
 #define NUM_OF_ANCHORS 5
@@ -49,9 +50,9 @@ static dwt_config_t config = {
 int anchorIDs[] = {132, 28, 24, 10, 30};
 int deviceID;
 
-static uint8_t msg_poll[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'P', 'O', 'L', 'L', 0xE0, 0, 0};  // Poll message array (used when initiating a distance measurement)
-static uint8_t msg_resp[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'R', 'E', 'S', 'P', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Response message array (used when responding to a poll)
-static uint8_t rx_buffer[20]; // Buffer for receiving messages
+static uint8_t msg_poll[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Poll message array (used when initiating a distance measurement)
+static uint8_t msg_resp[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'E', 'V', 'A', 'W', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Response message array (used when responding to a poll)
+static uint8_t rx_buffer[22]; // Buffer for receiving messages
 static uint8_t frame_seq_nb = 0;
 static uint32_t status_reg = 0;
 static uint64_t poll_ts;
@@ -179,19 +180,64 @@ bool isMyTimeSlot() {
 void getDistances() {
   // Serial.printf("Distance for Device %d...\n", deviceID);
   for (int i = deviceID + 1; i < NUM_OF_ANCHORS; i++) {
-    pollDevice(i);
-    // Serial.printf("Device %d --> %d: 0.0m\n", deviceID, i);   // Replace with calculated distance
-    delay(1000);
+    if(pollDevice(i)) {
+      responseReceived();
+    }
   }
-  Serial.println();
 }
 
-void pollDevice(int targetDeviceID) {
+bool pollDevice(int targetDeviceID) {
   // Send a poll message to the specified device
   // Implement the actual UWB poll message sending logic
-
+  msg_poll[RECEIVER_ID_IDX] = targetDeviceID;
+  msg_poll[SENDER_ID_IDX] = deviceID;
+  msg_poll[ALL_MSG_SN_IDX] = frame_seq_nb;
   
-  // Serial.printf("Polling Device %d\n", targetDeviceID);
+  Serial.printf("Device %d --> %d\n", deviceID, targetDeviceID);
+  // printBuffer(msg_poll, sizeof(msg_poll));
+  Serial.println();
+
+  dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
+  dwt_writetxdata(sizeof(msg_poll), msg_poll, 0);
+  dwt_writetxfctrl(sizeof(msg_poll), 0, 1);
+  dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+
+    // Serial.println("Waiting for response...");
+  while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR))) {}
+
+  frame_seq_nb++;
+ 
+  // Serial.println((status_reg & SYS_STATUS_RXFCG_BIT_MASK) ? "Response received." : "No response or error.");
+
+  return (status_reg & SYS_STATUS_RXFCG_BIT_MASK) != 0;
+}
+
+void responseReceived() {
+  Serial.println("Receiving Response");
+  dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
+  uint32_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
+
+  if (frame_len <= sizeof(rx_buffer)) {
+    dwt_readrxdata(rx_buffer, frame_len, 0);
+    // printBuffer(rx_buffer, sizeof(rx_buffer));
+  } else {
+    Serial.println("Error: Frame length too long.");
+    return;
+  }
+
+  rx_buffer[ALL_MSG_SN_IDX] = 0;
+
+  if (memcmp(rx_buffer, msg_resp, ALL_MSG_COMMON_LEN) == 0) {
+    printf("Successiful communication between Devices %d --> %d\n", rx_buffer[RECEIVER_ID_IDX], rx_buffer[SENDER_ID_IDX]);
+    calculateDistances();
+  } else {
+    Serial.println("Message and buffer don't match");
+    Serial.println("Received buffer:");
+    printBuffer(rx_buffer, sizeof(rx_buffer));
+    Serial.println("Expected poll message:");
+    printBuffer(msg_resp, sizeof(msg_resp));
+    delay(10000);
+  }
 }
 
 void listenForPollsAndRespond() {
@@ -200,18 +246,80 @@ void listenForPollsAndRespond() {
     // Respond to the poll
     respondToPoll();
   }
+  
+  // delay(100);
 }
 
 bool pollReceived() {
   // Implement logic to check if a poll message is received
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);
+  
+  while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR))) {}
+
+  if (status_reg & SYS_STATUS_RXFCG_BIT_MASK) {
+    uint32_t frame_len;
+
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
+
+    frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
+    if (frame_len <= sizeof(rx_buffer)){
+      dwt_readrxdata(rx_buffer, frame_len, 0);
+
+      // printBuffer(rx_buffer, sizeof(rx_buffer));
+
+      uint8_t targetDeviceID = rx_buffer[RECEIVER_ID_IDX];
+      if (targetDeviceID == deviceID) {
+        // Serial.println("Poll message is for this device!");
+        return true;
+      }
+    }
+  } else {
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
+    // Serial.println("No valid poll received.");
+  }
+
+  return false;
 }
 
 void respondToPoll() {
   // Implement logic to respond to the received poll message
+  Serial.println("Responding to Poll");
+  rx_buffer[ALL_MSG_SN_IDX] = 0;
+  msg_poll[ALL_MSG_SN_IDX] = 0;  
+  
+  Serial.println("---------------------");
+  uint32_t resp_time;
+  int ret;
+
+  poll_ts = get_rx_timestamp_u64();
+
+  resp_time = (poll_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+  dwt_setdelayedtrxtime(resp_time);
+  resp_ts = (((uint64_t)(resp_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+
+  msg_resp[RECEIVER_ID_IDX] = rx_buffer[SENDER_ID_IDX];
+  msg_resp[SENDER_ID_IDX] = rx_buffer[RECEIVER_ID_IDX];
+  resp_msg_set_ts(&msg_resp[RESP_MSG_POLL_RX_TS_IDX], poll_ts);
+  resp_msg_set_ts(&msg_resp[RESP_MSG_RESP_TX_TS_IDX], resp_ts);
+  msg_resp[ALL_MSG_SN_IDX] = frame_seq_nb;
+
+  Serial.println("Sending Response...");
+  printBuffer(msg_resp, sizeof(msg_resp));
+  
+  dwt_writetxdata(sizeof(msg_resp), msg_resp, 0);
+  dwt_writetxfctrl(sizeof(msg_resp), 0, 1);
+  dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+  if (ret == DWT_SUCCESS) {
+    while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS_BIT_MASK)) {}
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
+    frame_seq_nb++;
+  }
 }
 
 void calculateDistances() {
-  
+  Serial.println("*********************");
+  delay(10000);
 }
 
 void logDistanceData() {
@@ -219,5 +327,17 @@ void logDistanceData() {
 }
 
 
+// ----------------------------------------------
 
 
+void printBuffer(const uint8_t* buffer, size_t bufferSize) {
+    Serial.print("Buffer Content: ");
+    for (size_t i = 0; i < bufferSize; i++) {
+        if (buffer[i] < 0x10) {
+            Serial.print("0"); // Print leading zero for single hex digit
+        }
+        Serial.print(buffer[i], HEX); // Print each byte in hexadecimal format
+        Serial.print(" ");
+    }
+    Serial.println(); // New line after printing the entire buffer
+}
