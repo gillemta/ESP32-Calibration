@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <chrono>
 #include <map>
+#include <vector>
 
 // extern SPISettings _fastSPI;
 
@@ -65,10 +66,17 @@ std::map<int, int> deviceMappings = {
     {132, 0},
     {28, 1},
     {24, 2},
-    {10, 3},
-    {30, 4},
+    {184, 3},
+    {196, 4},
 };
 
+std::map<int, std::vector<double>> finalDistances;
+std::map<int, int> distanceCounts;
+std::vector<std::vector<bool>> distanceStored(NUM_OF_ANCHORS, std::vector<bool>(NUM_OF_ANCHORS, false));
+
+// ** Add values to dictionary **
+// finalDistances[1].push_back(10);
+// finalDistances[1].push_back(20);
 
 // Function to retrieve device ID based on the last byte of MAC address
 void getID() {
@@ -80,7 +88,7 @@ void getID() {
     deviceID = deviceMappings[lastByteOfMac];
     Serial.printf("Device %d has ID %d\n", deviceID, lastByteOfMac);
   } else {
-    Serial.println("Device ID not found for the MAC address.");
+    Serial.printf("Device %d hasn't been configured\n", lastByteOfMac);
   }
 }
 
@@ -141,6 +149,13 @@ void setup()
 
   delay(1000);
   getID();
+  // Initialize finalDistances map
+  for (int i = 0; i < NUM_OF_ANCHORS; ++i) {
+    finalDistances[i] = std::vector<double>(NUM_OF_ANCHORS - i - 1, 0.0);
+    distanceCounts[i] = 0;
+  }
+
+  
   Serial.println("Setup over........");
 }
 
@@ -194,7 +209,6 @@ bool pollDevice(int targetDeviceID) {
   msg_poll[ALL_MSG_SN_IDX] = frame_seq_nb;
   
   Serial.printf("Device %d --> %d\n", deviceID, targetDeviceID);
-  // printBuffer(msg_poll, sizeof(msg_poll));
   Serial.println();
 
   dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
@@ -202,52 +216,46 @@ bool pollDevice(int targetDeviceID) {
   dwt_writetxfctrl(sizeof(msg_poll), 0, 1);
   dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
-    // Serial.println("Waiting for response...");
   while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR))) {}
 
   frame_seq_nb++;
- 
-  // Serial.println((status_reg & SYS_STATUS_RXFCG_BIT_MASK) ? "Response received." : "No response or error.");
 
   return (status_reg & SYS_STATUS_RXFCG_BIT_MASK) != 0;
 }
 
 void responseReceived() {
-  Serial.println("Receiving Response");
   dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
   uint32_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
 
   if (frame_len <= sizeof(rx_buffer)) {
     dwt_readrxdata(rx_buffer, frame_len, 0);
-    // printBuffer(rx_buffer, sizeof(rx_buffer));
   } else {
     Serial.println("Error: Frame length too long.");
     return;
   }
 
   rx_buffer[ALL_MSG_SN_IDX] = 0;
+  msg_resp[ALL_MSG_SN_IDX] = 0;
 
   if (memcmp(rx_buffer, msg_resp, ALL_MSG_COMMON_LEN) == 0) {
-    printf("Successiful communication between Devices %d --> %d\n", rx_buffer[RECEIVER_ID_IDX], rx_buffer[SENDER_ID_IDX]);
-    calculateDistances();
+    int targetID = rx_buffer[SENDER_ID_IDX];
+    printf("Successful communication between Devices %d --> %d\n", rx_buffer[RECEIVER_ID_IDX], rx_buffer[SENDER_ID_IDX]);
+    calculateDistances(targetID);
+    // calculateDistances(,, targetID);
   } else {
-    Serial.println("Message and buffer don't match");
+    Serial.println("Response message and buffer don't match");
     Serial.println("Received buffer:");
     printBuffer(rx_buffer, sizeof(rx_buffer));
-    Serial.println("Expected poll message:");
+    Serial.println("Expected response message:");
     printBuffer(msg_resp, sizeof(msg_resp));
-    delay(10000);
+    // delay(1000);
   }
 }
 
 void listenForPollsAndRespond() {
-  // Check if a poll message is received
   if (pollReceived()) {
-    // Respond to the poll
     respondToPoll();
   }
-  
-  // delay(100);
 }
 
 bool pollReceived() {
@@ -265,29 +273,59 @@ bool pollReceived() {
     if (frame_len <= sizeof(rx_buffer)){
       dwt_readrxdata(rx_buffer, frame_len, 0);
 
-      // printBuffer(rx_buffer, sizeof(rx_buffer));
-
       uint8_t targetDeviceID = rx_buffer[RECEIVER_ID_IDX];
       if (targetDeviceID == deviceID) {
-        // Serial.println("Poll message is for this device!");
         return true;
       }
     }
   } else {
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
-    // Serial.println("No valid poll received.");
   }
 
   return false;
 }
 
+// // Implement logic to check if poll message is recieved
+// bool pollReceived(){
+//   while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR))) {
+//       // Loop until frame is received, a timeout occurs, or an error is detected
+//   };
+
+
+//     // Checks status of message 
+//     if (status_reg & SYS_STATUS_RXFCG_BIT_MASK) {
+
+//       // Successfully revieved frame so will now check contents
+//       uint32_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
+
+//       // Checks length of response
+//       if (frame_len == sizeof(msg_resp)) {
+
+//           dwt_readrxdata(rx_buffer, frame_len, 0);
+//           dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
+//           uint8_t targetDeviceID = rx_buffer[RECEIVER_ID_IDX];
+//           // Checks if device is the one being targetted, if so return true, else false
+//           if (targetDeviceID == deviceID){
+//               return true;
+//           } else{
+//               return false;
+//           }
+
+//       }
+//     } else {
+
+//         // No valid poll recieved
+//         dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
+//     }
+// }
+
 void respondToPoll() {
   // Implement logic to respond to the received poll message
-  Serial.println("Responding to Poll");
+  // Serial.println("Responding to Poll");
   rx_buffer[ALL_MSG_SN_IDX] = 0;
   msg_poll[ALL_MSG_SN_IDX] = 0;  
   
-  Serial.println("---------------------");
+  // Serial.println("---------------------");
   uint32_t resp_time;
   int ret;
 
@@ -304,7 +342,7 @@ void respondToPoll() {
   msg_resp[ALL_MSG_SN_IDX] = frame_seq_nb;
 
   Serial.println("Sending Response...");
-  printBuffer(msg_resp, sizeof(msg_resp));
+  // printBuffer(msg_resp, sizeof(msg_resp));
   
   dwt_writetxdata(sizeof(msg_resp), msg_resp, 0);
   dwt_writetxfctrl(sizeof(msg_resp), 0, 1);
@@ -317,13 +355,69 @@ void respondToPoll() {
   }
 }
 
-void calculateDistances() {
-  Serial.println("*********************");
-  delay(10000);
+// void calculateDistances(double pollTimeStamp, double responseTimeStamp, int targetDeviceID) {
+//   double totalTimeOfFlight, distance;
+//   totalTimeOfFlight = abs(pollTimeStamp - responseTimeStamp);
+
+//   distance = totalTimeOfFlight / (128 * 499.2); // to turn time into clock ticks divide the TOF by 128 * 499.2MHz
+
+//   logDistanceData(distance, targetDeviceID);
+// }
+
+void calculateDistances(int targetDeviceID) {
+  uint32_t poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
+  int32_t rtd_init, rtd_resp;
+  float clockOffsetRatio;
+
+  poll_tx_ts = dwt_readtxtimestamplo32();
+  resp_rx_ts = dwt_readrxtimestamplo32();
+
+  clockOffsetRatio = ((float)dwt_readclockoffset()) / (uint32_t)(1 << 26);
+
+  resp_msg_get_ts(&rx_buffer[RESP_MSG_POLL_RX_TS_IDX], &poll_rx_ts);
+  resp_msg_get_ts(&rx_buffer[RESP_MSG_RESP_TX_TS_IDX], &resp_tx_ts);
+
+  rtd_init = resp_rx_ts - poll_tx_ts;
+  rtd_resp = resp_tx_ts - poll_rx_ts;
+
+  tof = ((rtd_init - rtd_resp * (1 - clockOffsetRatio)) / 2.0) * DWT_TIME_UNITS;
+  distance = tof * SPEED_OF_LIGHT;
+
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.println( "meters");
+  // delay(3000);
+
+  logDistanceData(distance, targetDeviceID);
 }
 
-void logDistanceData() {
+void logDistanceData(double distance, int targetDeviceID) {
+  int index = targetDeviceID - deviceID - 1;
 
+  if (!distanceStored[deviceID][index]) {
+    finalDistances[deviceID][index] = distance;
+
+    distanceStored[deviceID][index] = true;
+
+    distanceCounts[deviceID]++;
+
+    if (distanceCounts[deviceID] == (NUM_OF_ANCHORS - deviceID -1)) {
+      Serial.print("Distances for Device ");
+      Serial.print(deviceID);
+      Serial.println(":");
+      
+
+      for (size_t i = 0; i < finalDistances[deviceID].size(); i++) {
+        Serial.print("To Device ");
+        Serial.print(deviceID + i + 1);
+        Serial.print(": ");
+        Serial.print(finalDistances[deviceID][i]);
+        Serial.println(" meters");
+      }
+
+      delay(10000);
+    }
+  }
 }
 
 
