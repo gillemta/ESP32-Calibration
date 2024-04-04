@@ -16,7 +16,7 @@
 #define RX_ANT_DLY 16385
 #define RESP_RX_TIMEOUT_UUS 1000
 #define POLL_TX_TO_RESP_RX_DLY_UUS 240
-#define POLL_RX_TO_RESP_TX_DLY_UUS 400
+#define POLL_RX_TO_RESP_TX_DLY_UUS 250
 
 // Indexes
 #define ALL_MSG_SN_IDX 2
@@ -193,11 +193,11 @@ bool isMyTimeSlot() {
 }
 
 void getDistances() {
-  // Serial.printf("Distance for Device %d...\n", deviceID);
   for (int i = deviceID + 1; i < NUM_OF_ANCHORS; i++) {
     if(pollDevice(i)) {
       responseReceived();
     }
+    delay(300);
   }
 }
 
@@ -208,8 +208,8 @@ bool pollDevice(int targetDeviceID) {
   msg_poll[SENDER_ID_IDX] = deviceID;
   msg_poll[ALL_MSG_SN_IDX] = frame_seq_nb;
   
-  Serial.printf("Device %d --> %d\n", deviceID, targetDeviceID);
-  Serial.println();
+  // Serial.printf("Device %d --> %d\n", deviceID, targetDeviceID);
+  // Serial.println();
 
   dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
   dwt_writetxdata(sizeof(msg_poll), msg_poll, 0);
@@ -230,7 +230,6 @@ void responseReceived() {
   if (frame_len <= sizeof(rx_buffer)) {
     dwt_readrxdata(rx_buffer, frame_len, 0);
   } else {
-    Serial.println("Error: Frame length too long.");
     return;
   }
 
@@ -243,11 +242,11 @@ void responseReceived() {
     calculateDistances(targetID);
     // calculateDistances(,, targetID);
   } else {
-    Serial.println("Response message and buffer don't match");
-    Serial.println("Received buffer:");
-    printBuffer(rx_buffer, sizeof(rx_buffer));
-    Serial.println("Expected response message:");
-    printBuffer(msg_resp, sizeof(msg_resp));
+    // Serial.println("Response message and buffer don't match");
+    // Serial.println("Received buffer:");
+    // printBuffer(rx_buffer, sizeof(rx_buffer));
+    // Serial.println("Expected response message:");
+    // printBuffer(msg_resp, sizeof(msg_resp));
     // delay(1000);
   }
 }
@@ -321,27 +320,33 @@ bool pollReceived() {
 
 void respondToPoll() {
   // Implement logic to respond to the received poll message
-  // Serial.println("Responding to Poll");
   rx_buffer[ALL_MSG_SN_IDX] = 0;
   msg_poll[ALL_MSG_SN_IDX] = 0;  
   
-  // Serial.println("---------------------");
   uint32_t resp_time;
   int ret;
 
   poll_ts = get_rx_timestamp_u64();
 
   resp_time = (poll_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+
+  // Serial.printf("poll_ts - %d\n", poll_ts);
+  // Serial.printf("resp_time - %d\n", resp_time);
+  // delay(5000);
   dwt_setdelayedtrxtime(resp_time);
+
+
   resp_ts = (((uint64_t)(resp_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
 
   msg_resp[RECEIVER_ID_IDX] = rx_buffer[SENDER_ID_IDX];
   msg_resp[SENDER_ID_IDX] = rx_buffer[RECEIVER_ID_IDX];
+
   resp_msg_set_ts(&msg_resp[RESP_MSG_POLL_RX_TS_IDX], poll_ts);
   resp_msg_set_ts(&msg_resp[RESP_MSG_RESP_TX_TS_IDX], resp_ts);
+  
   msg_resp[ALL_MSG_SN_IDX] = frame_seq_nb;
 
-  Serial.println("Sending Response...");
+  // Serial.println("Sending Response...");
   // printBuffer(msg_resp, sizeof(msg_resp));
   
   dwt_writetxdata(sizeof(msg_resp), msg_resp, 0);
